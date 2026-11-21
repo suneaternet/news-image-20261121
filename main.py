@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""News poster 21 Nov 2026 — decode the poster from base64 text, validate
-it, and hand it in as entry.png. Standard library only.
+"""News poster 21 Nov 2026.
 
-The poster ships as text (assets/poster.png.b64) because the repository
-cannot carry the binary directly. The decoded poster.png is written into
-the repository only when it is missing or does not match the encoded bytes;
-an already-correct poster.png is left untouched. The program never writes
-any other file into the repository; the entry goes to the output directory.
+Decode the poster shipped as base64 text (assets/poster.png.b64),
+validate it as a PNG, and hand it in as entry.png in the output
+directory. Standard library only.
+
+The decoded poster.png is written into the repository only when it is
+missing or its bytes differ from the decoded data; an already-correct
+copy is left untouched. Nothing else is ever written into the repo.
 """
 
 import base64
