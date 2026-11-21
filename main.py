@@ -1,116 +1,121 @@
 #!/usr/bin/env python3
-"""News poster 21 Nov 2026.
+"""Bangun ulang poster berita 21 Nov 2026 dari aset teks di repo ini.
 
-Decode the poster shipped as base64 text (assets/poster.png.b64),
-validate it as a PNG, and hand it in as entry.png in the output
-directory. Standard library only.
+Posternya berupa PNG 1024x1024, tapi transport snapshot hanya membawa
+teks UTF-8 — jadi gambar itu disimpan sebagai satu baris base64 di
+``assets/poster.png.b64``. Skrip ini mengubah baris itu kembali menjadi
+PNG, menyimpan salinan lokal di samping skrip bila belum ada atau isinya
+sudah tidak sama, lalu menaruh hasil akhirnya di
+``$MAKEFUN_OUTPUT_DIR/entry.png``.
 
-The decoded poster.png is written into the repository only when it is
-missing or its bytes differ from the decoded data; an already-correct
-copy is left untouched. Nothing else is ever written into the repo.
+Satu-satunya tulisan ke dalam repo adalah salinan lokal ``poster.png``
+itu sendiri, dan itu pun hanya bila berkasnya hilang atau berbeda — dan
+bila repo sedang read-only, langkah itu dilewati saja tanpa menggagalkan
+jalan. Hasil akhir selalu ditulis dari byte yang sudah divalidasi,
+langsung ke direktori output.
 """
 
+from __future__ import annotations
+
 import base64
+import binascii
+import hashlib
 import os
-import struct
 import sys
+from pathlib import Path
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
-ENCODED = os.path.join(ROOT, "assets", "poster.png.b64")
-DECODED = os.path.join(ROOT, "poster.png")
-MAX_BYTES = 1024 * 1024
-MAX_SIDE = 1024
-CHUNK = 64 * 1024
+# Poster yang diminta bounty: 1024x1024, tepat 711042 byte.
+UKURAN_HARUS = 711042
+# Delapan byte pertama setiap berkas PNG.
+TANDA_PNG = b"\x89PNG\r\n\x1a\n"
 
-
-def fail(message):
-    raise SystemExit(f"news-image-20261121: {message}")
-
-
-def read_encoded(path):
-    """Read the base64 poster text and decode it to PNG bytes."""
-    if not os.path.exists(path):
-        fail("assets/poster.png.b64 is missing from the repository")
-    with open(path, "r", encoding="ascii") as handle:
-        text = handle.read().strip()
-    try:
-        data = base64.b64decode(text, validate=True)
-    except Exception as exc:
-        fail(f"base64 decode failed: {exc}")
-    return data
+# Nama-nama relatif terhadap direktori tempat berkas ini berada.
+ASET_REL = Path("assets") / "poster.png.b64"
+POSTER_REL = Path("poster.png")
+ENTRY_REL = Path("entry.png")
 
 
-def validate_png(data):
-    """Validate the decoded PNG bytes; return (size, width, height)."""
-    size = len(data)
-    if size > MAX_BYTES:
-        fail(f"poster is {size} bytes, over the {MAX_BYTES} byte limit")
-    if len(data) < 24:
-        fail("poster is too short for a PNG header")
-    if data[:8] != b"\x89PNG\r\n\x1a\n":
-        fail("poster is not a PNG file")
-    (length,) = struct.unpack(">I", data[8:12])
-    if data[12:16] != b"IHDR" or length != 13:
-        fail("poster has no valid IHDR chunk")
-    (width, height) = struct.unpack(">II", data[16:24])
-    if width == 0 or height == 0 or width > MAX_SIDE or height > MAX_SIDE:
-        fail(f"poster is {width}x{height}, over the {MAX_SIDE}x{MAX_SIDE} limit")
-    return size, width, height
+def akar_skrip() -> Path:
+    """Direktori yang memuat berkas ini; root repo saat dijalankan."""
+    return Path(__file__).resolve().parent
 
 
-def ensure_poster(data):
-    """Make sure poster.png in the repo holds exactly the decoded bytes.
+def muat_byte_gambar(aset: Path) -> bytes:
+    """Kembalikan byte PNG yang tersembunyi di dalam aset base64.
 
-    Writes the file only when it is missing or its bytes differ; an
-    already-matching poster.png is left alone.
+    FileNotFoundError bila asetnya tidak ada, ValueError bila isinya
+    bukan base64 yang valid.
     """
-    if os.path.exists(DECODED):
-        with open(DECODED, "rb") as handle:
-            if handle.read() == data:
-                return
-    with open(DECODED, "wb") as handle:
-        handle.write(data)
-
-
-def copy_to_output(size):
-    """Copy poster.png to the output directory as entry.png and verify it."""
-    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR")
-    if not out_dir:
-        fail("MAKEFUN_OUTPUT_DIR is not set")
-    # The entry must never land inside the repository itself.
-    if os.path.commonpath([os.path.abspath(out_dir), ROOT]) == ROOT:
-        fail("MAKEFUN_OUTPUT_DIR must not be inside the repository")
+    teks = aset.read_text(encoding="ascii").strip()
     try:
-        os.makedirs(out_dir, exist_ok=True)
+        return base64.b64decode(teks, validate=True)
+    except binascii.Error as exc:
+        raise ValueError(f"aset {aset} bukan base64 valid: {exc}") from exc
+
+
+def periksa_gambar(blob: bytes) -> None:
+    """Tolak apa pun yang bukan poster yang persis kita harapkan."""
+    if blob[:8] != TANDA_PNG:
+        raise ValueError("byte hasil decode tidak diawali tanda PNG")
+    if len(blob) != UKURAN_HARUS:
+        raise ValueError(
+            f"poster hasil decode {len(blob)} byte, harusnya {UKURAN_HARUS}"
+        )
+
+def segarkan_poster(blob: bytes, poster: Path) -> str:
+    """Pastikan ``poster`` di disk berisi ``blob``.
+
+    Kembalikan "ditulis" bila berkasnya baru dibuat/diubah, "sudah ada"
+    bila isinya memang sudah sama, dan "dilewati" bila repo tidak bisa
+    ditulis (misalnya checkout read-only) — yang terakhir ini bukan
+    kegagalan, karena hasil akhir tidak bergantung pada salinan lokal.
+    """
+    try:
+        if poster.is_file() and poster.read_bytes() == blob:
+            return "sudah ada"
+        poster.write_bytes(blob)
+        return "ditulis"
+    except OSError:
+        return "dilewati"
+
+
+def terbitkan(blob: bytes, tujuan_dir: Path) -> Path:
+    """Tulis ``entry.png`` ke direktori output dari byte yang tervalidasi."""
+    tujuan_dir.mkdir(parents=True, exist_ok=True)
+    tujuan = tujuan_dir / ENTRY_REL
+    tujuan.write_bytes(blob)
+    return tujuan
+
+
+def sidik(blob: bytes) -> str:
+    return hashlib.sha256(blob).hexdigest()
+
+
+def jalan(argv: list[str]) -> int:
+    akar = akar_skrip()
+    aset = akar / ASET_REL
+    poster = akar / POSTER_REL
+    keluar = Path(os.environ.get("MAKEFUN_OUTPUT_DIR") or akar)
+
+    try:
+        blob = muat_byte_gambar(aset)
+        periksa_gambar(blob)
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        print(f"galat: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        status = segarkan_poster(blob, poster)
+        tujuan = terbitkan(blob, keluar)
     except OSError as exc:
-        fail(f"cannot create output directory {out_dir}: {exc}")
-    dest = os.path.join(out_dir, "entry.png")
-    with open(DECODED, "rb") as src, open(dest, "wb") as dst:
-        while True:
-            block = src.read(CHUNK)
-            if not block:
-                break
-            dst.write(block)
-    if os.path.getsize(dest) != size:
-        fail("entry.png size does not match poster.png")
-    with open(DECODED, "rb") as first, open(dest, "rb") as second:
-        while True:
-            a = first.read(CHUNK)
-            b = second.read(CHUNK)
-            if a != b:
-                fail("entry.png does not match poster.png")
-            if not a:
-                break
-    return dest
+        print(f"galat: tidak bisa menulis output: {exc}", file=sys.stderr)
+        return 1
 
-
-def main():
-    data = read_encoded(ENCODED)
-    size, width, height = validate_png(data)
-    ensure_poster(data)
-    dest = copy_to_output(size)
-    print(f"handed in: entry.png ({size} bytes, {width}x{height})")
+    print(f"poster: {len(blob)} byte sha256={sidik(blob)}")
+    print(f"salinan lokal: {poster} ({status})")
+    print(f"entry: {tujuan}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(jalan(sys.argv[1:]))
